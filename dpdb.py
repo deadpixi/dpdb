@@ -153,6 +153,15 @@ syntax.  For example:
     >>> db.list_users(order="ASC") == [{"name": "ocobblepot", "password": "wahwahwah"}, {"name": "ralghul", "password": "lazarus"}]
     True
 
+Unsafe substitutions can add new safe substitutions:
+
+    >>> config["QUERIES"]["get_user_with_predicate"] =  "SELECT * FROM users WHERE %(predicate)s"
+    >>> db = Database(config)
+    >>> result = db.create_table()
+    >>> result = db.create_user(name="vfries", password="socold")
+    >>> db.get_user_with_predicate(predicate="name LIKE ${pattern}", pattern="v%") == [{"name": "vfries", "password": "socold"}]
+    True
+
 Testing This Module
 ===================
 This module has embedded doctests that are run with the module is invoked
