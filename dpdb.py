@@ -46,6 +46,12 @@ a simple example configuration that connects to a SQLite in-memory database:
     ...     }
     ... }
 
+To make things easier for configuration file writers, queries can be
+split into lists of strings that are automatically concatenated (this
+is useful for formats like JSON that don't allow newlines in strings):
+
+    >>> config["QUERIES"]["list_users"] = ["SELECT * FROM", "users", "ORDER BY name ASC"]
+
 We can create a database using this configuration and create a test
 table using the "create_table" query that we defined (in a real world
 implementation, the database would probably have already been populated,
@@ -77,7 +83,7 @@ It takes two arguments: a DB-API standard cursor object and a row, and can
 return any value.  For example, here is the default row factory function:
 
     >>> def row_factory(cursor, row):
-    ...     return {name[0]: value for name, value in zip(cursor.description, row)}
+    ...     return dict((name[0], value) for name, value in zip(cursor.description, row))
 
     >>> db2 = Database(config, row_factory)
     >>> result = db2.create_table()
@@ -195,15 +201,25 @@ __email__ = "jking@deadpixi.com"
 __status__ = "Alpha"
 
 import collections
-import importlib
 import re
 import string
+
+try:
+    import importlib
+    import_module = importlib.import_module
+
+except ImportError:
+    def import_module(name):
+        return __import__(name)
 
 try:
     from collections import UserDict
 
 except ImportError:
     from UserDict import UserDict
+
+def is_string(x):
+    return isinstance(x, str) or isinstance(x, unicode)
 
 class Query:
     def __init__(self, query, database):
@@ -212,7 +228,7 @@ class Query:
 
     def __call__(self, *args, **kwargs):
         mapping = self.database.mapping(kwargs)
-        mapping.update({i: v for i, v in enumerate(args)})
+        mapping.update((i, v) for i, v in enumerate(args))
 
         query = string.Template(self.query % kwargs).substitute(mapping)
         self.database.cursor.execute(query, mapping.get_parameters())
@@ -259,7 +275,7 @@ class NamedMapping(Mapping):
 
 class FormatMapping(QmarkMapping):
     def __getitem__(self, item):
-        self.params.append(self.mapping[item])
+        self.params.append(self.data[item])
         return '%s'
 
 class PyformatMapping(NamedMapping):
@@ -272,7 +288,7 @@ class Database:
     A database connection.
     """
 
-    def __init__(self, config, row_factory=lambda c, r: {n[0]: v for n, v in zip(c.description, r)}, **parameters):
+    def __init__(self, config, row_factory=lambda c, r: dict((n[0], v) for n, v in zip(c.description, r)), **parameters):
         if not isinstance(config, collections.Mapping):
             raise TypeError("config must be a mapping")
 
@@ -282,11 +298,11 @@ class Database:
         if not all(isinstance(x, collections.Mapping) for x in config.values()):
             raise ValueError("invalid section in configuration")
 
-        if "name" not in config["MODULE"] or not isinstance(config["MODULE"]["name"], str):
+        if "name" not in config["MODULE"] or not is_string(config["MODULE"]["name"]):
             raise ValueError("invalid MODULE configuration section; no module name specified")
 
         self.config = config
-        self.module = importlib.import_module(config["MODULE"]["name"])
+        self.module = import_module(config["MODULE"]["name"])
         if getattr(self.module, "apilevel", None) != "2.0":
             raise ValueError("module does not indicate support for Python DB-API 2.0")
 
@@ -302,11 +318,22 @@ class Database:
             raise ValueError("module has unsupported paramstyle '%s'" % self.module.paramstyle)
         self.mapping = param_mappings[self.module.paramstyle]
 
-        if not all(isinstance(x, str) and isinstance(y, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*", x) for x, y in config["QUERIES"].items()):
-            raise ValueError("invalid query specification")
+        for query, value in config["QUERIES"].items():
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*", query):
+                raise ValueError("invalid query name '%s'" % query)
 
-        self.queries = {k: Query(v, self) for k, v in config["QUERIES"].items()}
-        self.db = self.module.connect(**{k: (v.format(**parameters) if isinstance(v, str) else v) for k, v in config["DATABASE"].items()})
+            if is_string(value):
+                config["QUERIES"][query] = [value]
+
+            elif isinstance(value, list):
+                if not all(is_string(v) for v in value):
+                     raise ValueError("invalid query specification for '%s'" % query)
+
+            else:
+                raise ValueError("invalid query specification for '%s'" % query)
+
+        self.queries = dict((k, Query(" ".join(v), self)) for k, v in config["QUERIES"].items())
+        self.db = self.module.connect(**dict((str(k), (v.format(**parameters) if is_string(v) else v)) for k, v in config["DATABASE"].items()))
         self.cursor = self.db.cursor()
         self.row_factory = row_factory
         self._transaction = 0
