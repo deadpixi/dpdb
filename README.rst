@@ -1,6 +1,7 @@
-# Introduction
+Introduction
+============
 This module provides a simple wrapper mechanism that abstracts away
-differences in various `DB-API` modules.  It is compatible with both Python
+differences in various `DB-API`_ modules.  It is compatible with both Python
 2.7 and Python 3.x.
 
 The Python DB-API specifies a standardized set of mechanisms to access
@@ -73,7 +74,7 @@ It takes two arguments: a DB-API standard cursor object and a row, and can
 return any value.  For example, here is the default row factory function:
 
     >>> def row_factory(cursor, row):
-    ...     return {name[0]: value for name, value in zip(cursor.description, row)}
+    ...     return dict((name[0], value) for name, value in zip(cursor.description, row))
 
     >>> db2 = Database(config, row_factory)
     >>> result = db2.create_table()
@@ -81,7 +82,8 @@ return any value.  For example, here is the default row factory function:
     >>> db2.list_users() == [{"name": "dick", "password": "batmanrules"}]
     True
 
-# Connection and Transaction Contexts
+Connection and Transaction Contexts
+===================================
 The Database class also acts as a context manager:
 
     >>> with Database(config) as db:
@@ -112,7 +114,8 @@ This mechanism has the nice benefit that transactions can include non-database
 related statements within the context that will cause an automatic transaction
 rollback should they fail.
 
-# Unsafe Substitutions
+Unsafe Substitutions
+====================
 The "QUERIES" section of the database configuration allows parameterization
 using `string.Template` syntax.  These substitutions are automatically
 converted to the module's native substitution format (`qmark`, `named`, etc).
@@ -146,12 +149,117 @@ syntax.  For example:
     True
     >>> db.list_users(order="ASC") == [{"name": "ocobblepot", "password": "wahwahwah"}, {"name": "ralghul", "password": "lazarus"}]
     True
+    >>> db.close()
 
-# Testing This Module
+Unsafe substitutions can add new safe substitutions:
+
+    >>> config["QUERIES"]["get_user_with_predicate"] =  "SELECT * FROM users WHERE %(predicate)s"
+    >>> db = Database(config)
+    >>> result = db.create_table()
+    >>> result = db.create_user(name="vfries", password="socold")
+    >>> db.get_user_with_predicate(predicate="name LIKE ${pattern}", pattern="v%") == [{"name": "vfries", "password": "socold"}]
+    True
+
+Runtime Configuration
+=====================
+For simplicity of use, a handle and a module can be passed directly to the
+Database init method:
+
+    >>> import sqlite3
+    >>> config2 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": "INSERT INTO users(name, password) VALUES(${name}, ${password})",
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC",
+    ...         "get_password": "SELECT password FROM users WHERE name = ${name}",
+    ...         "delete_user": "DELETE FROM users WHERE name = ${name}"
+    ...     }
+    ... }
+    >>> handle = sqlite3.connect(":memory:")
+    >>> db = Database(config2, handle=handle, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user(name="jjonzz", password="oleo")
+    >>> db.list_users(order="DESC") == [{"name": "jjonzz", "password": "oleo"}]
+    True
+    >>> handle.close()
+
+Mapping Positional Names and Custom Return Values
+=================================================
+Queries can also use positional names:
+
+    >>> config3 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": "INSERT INTO users(name, password) VALUES(${_0}, ${_1})",
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC"
+    ...     }
+    ... }
+    >>> handle2 = sqlite3.connect(":memory:")
+    >>> db = Database(config3, handle=handle2, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user("vstone", "beepboop")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+    >>> handle2.close()
+
+If queries are going to be called often using purely positional arguments,
+they can be named:
+
+    >>> config4 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": {
+    ...             "query": "INSERT INTO users(name, password) VALUES(${username}, ${password})",
+    ...             "parameters": ["username", "password"]
+    ...         },
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC"
+    ...     }
+    ... }
+    >>> handle3 = sqlite3.connect(":memory:")
+    >>> db = Database(config4, handle=handle3, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user("vstone", "beepboop")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+
+Adding Additional Queries at Runtime
+====================================
+New queries can be added at runtime:
+
+    >>> db.add_query("uppercase_passwords", "UPDATE users SET password = UPPER(password)")
+    >>> result = db.uppercase_passwords()
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "BEEPBOOP"}]
+    True
+
+The positional-to-name mapping can be provided as an optional third
+argument:
+
+    >>> db.add_query("lowercase_password_for_user", "UPDATE users SET password = LOWER(password) WHERE name = ${name}", ["name"])
+    >>> result = db.lowercase_password_for_user("vstone")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+
+Multi-Statement Queries
+=======================
+A single query can contain multiple statements.
+These statements will be executed in order and within a transaction.
+The result of the last statement is the result of the query:
+
+    >>> db.add_query("create_user_returning_id", [
+    ...     "INSERT INTO users(name, password) VALUES(${username}, ${password})",
+    ...     "SELECT last_insert_rowid() AS id"
+    ... ], ["username", "password"])
+    >>> result = db.create_user_returning_id("oqueen", "thequiver")
+    >>> "id" in result[0] and isinstance(result[0]["id"], int)
+    True
+
+Testing This Module
+===================
 This module has embedded doctests that are run with the module is invoked
 from the command line.  Simply run the module directly to run the tests.
 
-# Contact Information and Licensing
+Contact Information and Licensing
+=================================
 This module was written by Rob King (jking@deadpixi.com).
 
 This program is free software: you can redistribute it and/or modify
