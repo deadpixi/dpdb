@@ -259,7 +259,7 @@ The result of the last statement is the result of the query:
 Extended ConfigParser Format
 ============================
 Python 3.x ConfigParser objects can be used "naturally", since they conform
-to the Mapping protocol. Such files look like this:
+to the Mapping protocol. Such files look like this::
 
     [MODULE]
     name=sqlite3
