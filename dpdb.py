@@ -256,6 +256,67 @@ The result of the last statement is the result of the query:
     >>> "id" in result[0] and isinstance(result[0]["id"], int)
     True
 
+Extended ConfigParser Format
+============================
+Python 3.x ConfigParser objects can be used "naturally", since they conform
+to the Mapping protocol. Such files look like this:
+
+    [MODULE]
+    name=sqlite3
+
+    [DATABASE]
+    database=:memory:
+
+    [QUERIES]
+    example1=SELECT * FROM foo WHERE bar = ${baz}
+
+However, this "natural" mapping doesn't specification of multi-statement
+queries or named positional arguments.
+
+(Note that JSON files are also "natural" to use, but without line breaks in
+strings it's hard to make large queries readable.)
+
+As a convenience to the user, the Database class supports two static
+constructors: `from_config` and `from_config_file`. Addtionally, two
+instance methods are defined: `load_queries_from_config` and
+`load_queries_from_config_file`.
+
+These constructors read a specially-formed ConfigParser file format that
+supports all of this module's special features. Note that it is in no way
+required to use this format for configuration: JSON files, regular ConfigParser
+objects (in Python 3.x), Python dictionaries, or any other Mapping can be
+used. This special format is just a convenience, especially for Python 2.x
+users.
+
+The format looks like this:
+
+    >>> config5 = '''
+    ... [MODULE]
+    ... name = sqlite3
+    ...
+    ... [DATABASE]
+    ... database = :memory:
+    ...
+    ... [QUERY create_table]
+    ... statement1 = CREATE TABLE users (
+    ...         name     TEXT NOT NULL PRIMARY KEY,
+    ...         password TEXT NOT NULL
+    ...      )
+    ...
+    ... [QUERY create_user_returning_id]
+    ... parameters  = name password
+    ... statement1  = INSERT INTO users(name, password) VALUES(${name}, ${password})
+    ... statement2  = SELECT last_insert_rowid() AS id
+    ... '''
+
+This configuration can be used like this:
+
+    >>> db = Database.from_config(config5)
+    >>> result = db.create_table()
+    >>> result = db.create_user_returning_id("dprince", "greathera")
+    >>> "id" in result[0] and isinstance(result[0]["id"], int)
+    True
+
 Testing This Module
 ===================
 This module has embedded doctests that are run with the module is invoked
@@ -305,6 +366,18 @@ try:
 
 except ImportError:
     from UserDict import UserDict
+
+try:
+    from ConfigParser import RawConfigParser
+
+except ImportError:
+    from configparser import RawConfigParser
+
+try:
+    from StringIO import StringIO
+
+except ImportError:
+    from io import StringIO
 
 if 'unicode' not in dir(__builtins__):
     unicode = str # for Python 3
@@ -384,12 +457,59 @@ class PyformatMapping(NamedMapping):
         self.params[item] = self.data[item]
         return '%%(%s)s' % item
 
+def default_row_factory(cursor, row):
+    return dict((n[0], v) for n, v in zip(cursor.description, row))
+
+def dict_of_config(parser):
+    config = {}
+    for section in parser.sections():
+        config[section] = dict((k, v) for k, v in parser.items(section))
+    if "QUERIES" not in config:
+        config["QUERIES"] = {}
+
+    return config
+
 class Database:
     """
     A database connection.
     """
 
-    def __init__(self, config, row_factory=lambda c, r: dict((n[0], v) for n, v in zip(c.description, r)), handle=None, module=None, **parameters):
+    @classmethod
+    def from_config_file(self, config_file, row_factory=default_row_factory, handle=None, module=None, **parameters):
+        with open(config_file, "r") as fp:
+            return self.from_config(fp.read(), row_factory, handle, module, **parameters)
+
+    @classmethod
+    def from_config(self, config, row_factory=default_row_factory, handle=None, module=None, **parameters):
+        s = StringIO(config)
+        parser = RawConfigParser()
+        parser.readfp(s)
+
+        db = Database(dict_of_config(parser), row_factory, handle, module, **parameters)
+        db.load_queries_from_config(config)
+        return db
+
+    def load_queries_from_config_file(self, config_file):
+        with open(config_file, "r") as fp:
+            return self.load_queries_from_config(fp.read())
+
+    def load_queries_from_config(self, config):
+        s = StringIO(config)
+        parser = RawConfigParser()
+        parser.readfp(s)
+
+        config = dict_of_config(parser)
+
+        for section, contents in config.items():
+            if section.startswith("QUERY"):
+                args = None
+                if "parameters" in contents:
+                    args = contents["parameters"].split()
+
+                statements = [s[1] for s in sorted(contents.items()) if s[0].startswith("statement")]
+                self.add_query(section[len("QUERY "):], statements, args)
+
+    def __init__(self, config, row_factory=default_row_factory, handle=None, module=None, **parameters):
         if not isinstance(config, collections.Mapping):
             raise TypeError("config must be a mapping")
 
