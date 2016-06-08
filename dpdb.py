@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 """
 Introduction
@@ -45,12 +45,6 @@ a simple example configuration that connects to a SQLite in-memory database:
     ...         "delete_user": "DELETE FROM users WHERE name = ${name}"
     ...     }
     ... }
-
-To make things easier for configuration file writers, queries can be
-split into lists of strings that are automatically concatenated (this
-is useful for formats like JSON that don't allow newlines in strings):
-
-    >>> config["QUERIES"]["list_users"] = ["SELECT * FROM", "users", "ORDER BY name ASC"]
 
 We can create a database using this configuration and create a test
 table using the "create_table" query that we defined (in a real world
@@ -158,6 +152,7 @@ syntax.  For example:
     True
     >>> db.list_users(order="ASC") == [{"name": "ocobblepot", "password": "wahwahwah"}, {"name": "ralghul", "password": "lazarus"}]
     True
+    >>> db.close()
 
 Unsafe substitutions can add new safe substitutions:
 
@@ -166,6 +161,99 @@ Unsafe substitutions can add new safe substitutions:
     >>> result = db.create_table()
     >>> result = db.create_user(name="vfries", password="socold")
     >>> db.get_user_with_predicate(predicate="name LIKE ${pattern}", pattern="v%") == [{"name": "vfries", "password": "socold"}]
+    True
+
+Runtime Configuration
+=====================
+For simplicity of use, a handle and a module can be passed directly to the
+Database init method:
+
+    >>> import sqlite3
+    >>> config2 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": "INSERT INTO users(name, password) VALUES(${name}, ${password})",
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC",
+    ...         "get_password": "SELECT password FROM users WHERE name = ${name}",
+    ...         "delete_user": "DELETE FROM users WHERE name = ${name}"
+    ...     }
+    ... }
+    >>> handle = sqlite3.connect(":memory:")
+    >>> db = Database(config2, handle=handle, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user(name="jjonzz", password="oleo")
+    >>> db.list_users(order="DESC") == [{"name": "jjonzz", "password": "oleo"}]
+    True
+    >>> handle.close()
+
+Mapping Positional Names and Custom Return Values
+=================================================
+Queries can also use positional names:
+
+    >>> config3 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": "INSERT INTO users(name, password) VALUES(${_0}, ${_1})",
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC"
+    ...     }
+    ... }
+    >>> handle2 = sqlite3.connect(":memory:")
+    >>> db = Database(config3, handle=handle2, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user("vstone", "beepboop")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+    >>> handle2.close()
+
+If queries are going to be called often using purely positional arguments,
+they can be named:
+
+    >>> config4 = {
+    ...     "QUERIES": {
+    ...         "create_table": "CREATE TABLE users (name TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL)",
+    ...         "create_user": {
+    ...             "query": "INSERT INTO users(name, password) VALUES(${username}, ${password})",
+    ...             "parameters": ["username", "password"]
+    ...         },
+    ...         "list_users": "SELECT * FROM users ORDER BY name ASC"
+    ...     }
+    ... }
+    >>> handle3 = sqlite3.connect(":memory:")
+    >>> db = Database(config4, handle=handle3, module=sqlite3)
+    >>> result = db.create_table()
+    >>> result = db.create_user("vstone", "beepboop")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+
+Adding Additional Queries at Runtime
+====================================
+New queries can be added at runtime:
+
+    >>> db.add_query("uppercase_passwords", "UPDATE users SET password = UPPER(password)")
+    >>> result = db.uppercase_passwords()
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "BEEPBOOP"}]
+    True
+
+The positional-to-name mapping can be provided as an optional third
+argument:
+
+    >>> db.add_query("lowercase_password_for_user", "UPDATE users SET password = LOWER(password) WHERE name = ${name}", ["name"])
+    >>> result = db.lowercase_password_for_user("vstone")
+    >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "beepboop"}]
+    True
+
+Multi-Statement Queries
+=======================
+A single query can contain multiple statements.
+These statements will be executed in order and within a transaction.
+The result of the last statement is the result of the query:
+
+    >>> db.add_query("create_user_returning_id", [
+    ...     "INSERT INTO users(name, password) VALUES(${username}, ${password})",
+    ...     "SELECT last_insert_rowid() AS id"
+    ... ], ["username", "password"])
+    >>> result = db.create_user_returning_id("oqueen", "thequiver")
+    >>> "id" in result[0] and isinstance(result[0]["id"], int)
     True
 
 Testing This Module
@@ -218,27 +306,40 @@ try:
 except ImportError:
     from UserDict import UserDict
 
+if 'unicode' not in dir(__builtins__):
+    unicode = str # for Python 3
+
 def is_string(x):
     return isinstance(x, str) or isinstance(x, unicode)
 
 class Query:
-    def __init__(self, query, database):
-        self.query = query
+    def __init__(self, queries, database, parameters):
+        self.queries = queries
         self.database = database
+        self.parameters = parameters
 
     def __call__(self, *args, **kwargs):
-        mapping = self.database.mapping(kwargs)
-        mapping.update((i, v) for i, v in enumerate(args))
+        results = []
+        for query in self.queries:
+            mapping = self.database.mapping(kwargs)
+            mapping.update(("_" + str(i), v) for i, v in enumerate(args))
+            mapping.update((k, v) for k, v in zip(self.parameters, args))
 
-        query = string.Template(self.query % kwargs).substitute(mapping)
-        self.database.cursor.execute(query, mapping.get_parameters())
+            query = string.Template(query % kwargs).substitute(mapping)
+            self.database.cursor.execute(query, mapping.get_parameters())
 
-        try:
-            results = self.database.cursor.fetchall()
-            return [self.database.row_factory(self.database.cursor, x) for x in results]
+            try:
+                results = self.database.cursor.fetchall()
+                results = [self.database.row_factory(self.database.cursor, x) for x in results]
 
-        except self.database.module.Error:
-            return []
+            except self.database.module.Error:
+                # IMHO, this is a poor design decision on the DB-API's part.
+                # Calling fetchall for a query with no results throws this
+                # error rather than returning None.
+                results = []
+                continue
+
+        return results
 
 class Mapping(UserDict):
     def get_parameters(self):
@@ -288,21 +389,25 @@ class Database:
     A database connection.
     """
 
-    def __init__(self, config, row_factory=lambda c, r: dict((n[0], v) for n, v in zip(c.description, r)), **parameters):
+    def __init__(self, config, row_factory=lambda c, r: dict((n[0], v) for n, v in zip(c.description, r)), handle=None, module=None, **parameters):
         if not isinstance(config, collections.Mapping):
             raise TypeError("config must be a mapping")
 
-        if not set(["MODULE", "DATABASE", "QUERIES"]) <= set(config.keys()):
-            raise ValueError("missing section in configuration")
+        if handle is None:
+            if "MODULE" not in config.keys() or "DATABASE" not in config.keys():
+                raise ValueError("missing section in configuration")
+
+            if "name" not in config["MODULE"] or not is_string(config["MODULE"]["name"]):
+                raise ValueError("invalid MODULE configuration section; no module name specified")
 
         if not all(isinstance(x, collections.Mapping) for x in config.values()):
             raise ValueError("invalid section in configuration")
 
-        if "name" not in config["MODULE"] or not is_string(config["MODULE"]["name"]):
-            raise ValueError("invalid MODULE configuration section; no module name specified")
-
         self.config = config
-        self.module = import_module(config["MODULE"]["name"])
+        self.module = module
+        if self.module is None:
+            self.module = import_module(config["MODULE"]["name"])
+
         if getattr(self.module, "apilevel", None) != "2.0":
             raise ValueError("module does not indicate support for Python DB-API 2.0")
 
@@ -318,22 +423,23 @@ class Database:
             raise ValueError("module has unsupported paramstyle '%s'" % self.module.paramstyle)
         self.mapping = param_mappings[self.module.paramstyle]
 
-        for query, value in config["QUERIES"].items():
-            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*", query):
-                raise ValueError("invalid query name '%s'" % query)
+        if handle:
+            self.db = handle
 
-            if is_string(value):
-                config["QUERIES"][query] = [value]
+        else:
+            self.db = self.module.connect(**dict((str(k), (v.format(**parameters) if is_string(v) else v)) for k, v in config["DATABASE"].items()))
 
-            elif isinstance(value, list):
-                if not all(is_string(v) for v in value):
-                     raise ValueError("invalid query specification for '%s'" % query)
+        self.queries = {}
+        for name, value in config["QUERIES"].items():
+            if isinstance(value, collections.Mapping):
+                if "query" not in value or "parameters" not in value:
+                    raise ValueError("invalid query specification for '%s'" % name)
+
+                self.add_query(name, value["query"], value["parameters"])
 
             else:
-                raise ValueError("invalid query specification for '%s'" % query)
+                self.add_query(name, value)
 
-        self.queries = dict((k, Query(" ".join(v), self)) for k, v in config["QUERIES"].items())
-        self.db = self.module.connect(**dict((str(k), (v.format(**parameters) if is_string(v) else v)) for k, v in config["DATABASE"].items()))
         self.cursor = self.db.cursor()
         self.row_factory = row_factory
         self._transaction = 0
@@ -370,6 +476,21 @@ class Database:
 
         self.db.close()
 
+    def add_query(self, name, statements, parameters=None):
+        query = None
+        parameters = parameters or []
+
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("invalid query name '%s'" % name)
+
+        if is_string(statements):
+            statements = [statements]
+
+        if not isinstance(statements, collections.Sequence) or not all(map(is_string, statements)):
+            raise TypeError("invalid query specification for '%s'" % name)
+
+        self.queries[name] = Query(statements, self, parameters)
+
     def commit(self):
         assert self._transaction == 0
         self.db.commit()
@@ -377,6 +498,9 @@ class Database:
     def rollback(self):
         assert self._transaction == 0
         self.db.rollback()
+
+    def close(self):
+        self.db.close()
 
 class Transaction:
     """
