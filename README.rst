@@ -1,7 +1,7 @@
 Introduction
 ============
 This module provides a simple wrapper mechanism that abstracts away
-differences in various `DB-API`_ modules.  It is compatible with both Python
+differences in various DB-API modules.  It is compatible with both Python
 2.7 and Python 3.x.
 
 The Python DB-API specifies a standardized set of mechanisms to access
