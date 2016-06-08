@@ -265,7 +265,7 @@ to the Mapping protocol. Such files look like this::
     database=:memory:
 
     [QUERIES]
-    example1=SELECT * FROM foo WHERE bar = ${baz}
+    statement1=SELECT * FROM foo WHERE bar = ${baz}
 
 However, this "natural" mapping doesn't specification of multi-statement
 queries or named positional arguments.
@@ -313,6 +313,18 @@ This configuration can be used like this:
     >>> result = db.create_user_returning_id("dprince", "greathera")
     >>> "id" in result[0] and isinstance(result[0]["id"], int)
     True
+
+Each section whose name starts with "QUERY" defines a query.
+The name of the query is the name of the section with "QUERY " stripped
+off the front.
+
+If a "parameters" option is defined in that section, the value of
+that option is a space-separated list of argument names.
+
+Each statement in a query is defined by having an arbitrary
+number of options whose names start with "statement".
+Note that these options are lexically sorted at load time,
+so pay careful attention to the names you choose.
 
 Testing This Module
 ===================
