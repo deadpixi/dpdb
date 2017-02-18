@@ -22,6 +22,8 @@ Others might expect
 
     SELECT * FROM foo WHERE name = %(name)s AND age = %(age)s
 
+and a dictionary of parameters.
+
 All told, there are *five* different quoting styles allowed by the
 DB-API.
 
