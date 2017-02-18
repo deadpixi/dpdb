@@ -9,6 +9,19 @@ different database engines.  However, the specification allows for
 considerable leeway in how SQL statements and queries are presented to the
 user, including different parameter quoting styles.
 
+For example, some modules want you to present parameterized queries like this:
+
+    SELECT * FROM foo WHERE name = ? AND age = ?
+
+and provide a list of parameters at execution time.
+
+Others might expect
+
+    SELECT * FROM foo WHERE name = %(name)s AND age = %(age)s
+
+All told, there are *five* different quoting styles allowed by the
+DB-API.
+
 This module abstracts away those differences and also allows for SQL
 statements and queries to be completely isolated from Python code.  It serves
 as a very lightweight database abstraction library, and makes it possible
@@ -101,7 +114,7 @@ transactions:
     ...         result = db.create_user(name="hal", password="brightestday")
     ...         result = db.create_user(name="hal", password="darkestnight")
     ... except Exception:
-    ...     print("transaction failed")
+    ...     print("transaction failed") # by quirk, this works in Py2 and Py3.
     transaction failed
 
 And note that because the failure happened within a transaction, nothing
@@ -132,7 +145,7 @@ These substitutions can appear in arbitrarily complex queries:
 However, many database engines only allow certain portions of queries to be
 parameterized using parameter substitution.  Often, "structural" components
 in a query (the names of tables, columns used for sorting, sort order,
-limits) cannot be substituted using the module's substitution mechanism.
+limits, etc) cannot be substituted using the module's substitution mechanism.
 For these sorts of situations, unsafe substitution can be used.  Note that
 the name means what it says: using this form of substitution can result in
 SQL injection attacks, so use them wisely!
@@ -231,7 +244,7 @@ New queries can be added at runtime:
     >>> db.list_users(order="DESC") == [{"name": "vstone", "password": "BEEPBOOP"}]
     True
 
-The positional-to-name mapping can be provided as an optional third
+The position-to-name mapping can be provided as an optional third
 argument:
 
     >>> db.add_query("lowercase_password_for_user", "UPDATE users SET password = LOWER(password) WHERE name = ${name}", ["name"])
@@ -267,8 +280,8 @@ to the Mapping protocol. Such files look like this::
     [QUERIES]
     statement1=SELECT * FROM foo WHERE bar = ${baz}
 
-However, this "natural" mapping doesn't specification of multi-statement
-queries or named positional arguments.
+However, this "natural" mapping doesn't support specification of
+multi-statement queries or named positional arguments.
 
 (Note that JSON files are also "natural" to use, but without line breaks in
 strings it's hard to make large queries readable.)
